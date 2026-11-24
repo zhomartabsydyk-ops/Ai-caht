@@ -1,0 +1,6 @@
+{
+  "appId": "com.delta.ai_router",
+  "appName": "AI Router",
+  "webDir": ".",
+  "bundledWebRuntime": false
+}
