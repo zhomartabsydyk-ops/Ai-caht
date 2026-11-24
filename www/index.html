@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AI Router</title>
+<style>
+:root {
+  --bg: #0a0a0f; --surface: #14141a; --surface-2: #1e1e26;
+  --primary: #00ff8c; --primary-dim: #00ff8c33; --text: #e5e5ea;
+  --text-dim: #888890; --danger: #ff3b3b; --border: #00ff8c44;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+header {
+  padding: 10px 14px; background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+header h1 { font-size: 16px; color: var(--primary); font-weight: 700; flex: 1; letter-spacing: 0.5px; }
+.stat {
+  font-size: 11px; color: var(--text-dim); background: var(--surface-2);
+  padding: 4px 8px; border-radius: 6px; border: 1px solid var(--primary-dim);
+  white-space: nowrap;
+}
+.stat span { color: var(--primary); font-weight: 600; }
+
+#chat {
+  flex: 1; overflow-y: auto; padding: 14px;
+  display: flex; flex-direction: column; gap: 12px;
+  scroll-behavior: smooth;
+}
+.msg {
+  max-width: 88%; padding: 10px 14px; border-radius: 16px;
+  font-size: 15px; line-height: 1.45; white-space: pre-wrap;
+  word-wrap: break-word; animation: fade 0.2s ease;
+}
+@keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.user { align-self: flex-end; background: var(--primary); color: var(--bg); border-bottom-right-radius: 4px; }
+.bot { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--primary-dim); border-bottom-left-radius: 4px; }
+.err { align-self: center; background: #ff3b3b22; color: #ff8a8a; font-size: 13px; text-align: center; border: 1px solid #ff3b3b44; }
+.meta { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+
+footer {
+  padding: 10px 14px; background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0;
+}
+#input {
+  flex: 1; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--primary-dim); border-radius: 12px;
+  padding: 10px 12px; font-size: 15px; resize: none;
+  max-height: 110px; min-height: 42px; font-family: inherit;
+  outline: none; transition: border-color 0.2s;
+}
+#input:focus { border-color: var(--primary); }
+#send {
+  background: var(--primary); color: var(--bg); border: 0;
+  border-radius: 12px; width: 46px; height: 46px;
+  font-weight: 700; font-size: 20px; display: flex;
+  align-items: center; justify-content: center;
+  transition: opacity 0.2s, transform 0.1s;
+}
+#send:active { transform: scale(0.94); }
+#send:disabled { opacity: 0.35; }
+
+#model-badge {
+  font-size: 10px; color: var(--primary); text-align: center;
+  padding: 4px 8px; background: var(--surface-2); border-radius: 6px;
+  border: 1px solid var(--primary-dim); margin: 0 14px 6px 14px;
+  opacity: 0; transition: opacity 0.3s; flex-shrink: 0;
+}
+#model-badge.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AI // Router</h1>
+  <div class="stat">Tokens: <span id="stat-tokens">0</span></div>
+  <div class="stat">Req: <span id="stat-req">0</span></div>
+</header>
+
+<div id="model-badge">Выбираю модель...</div>
+<div id="chat"></div>
+
+<footer>
+  <textarea id="input" rows="1" placeholder="Спроси что угодно..."></textarea>
+  <button id="send">↑</button>
+</footer>
+
+<script>
+const API_CONFIG = {
+  baseUrl: "https://api.openapis.online",
+  apiKey: "admin",
+  models: [
+    { id: "claude-3-5-sonnet-latest", name: "Claude 3.5 Sonnet", tier: 3, maxTokens: 200000 },
+    { id: "claude-3-5-haiku-latest",  name: "Claude 3.5 Haiku",  tier: 1, maxTokens: 200000 },
+    { id: "claude-3-opus-latest",     name: "Claude 3 Opus",     tier: 3, maxTokens: 200000 },
+    { id: "gpt-4o-mini",              name: "GPT-4o mini",       tier: 1, maxTokens: 128000 },
+    { id: "gpt-4o",                   name: "GPT-4o",            tier: 3, maxTokens: 128000 },
+    { id: "deepseek-chat",            name: "DeepSeek V3",       tier: 2, maxTokens: 64000 },
+    { id: "gemini-2.5-flash",         name: "Gemini 2.5 Flash",  tier: 1, maxTokens: 1000000 },
+  ]
+};
+
+function pickBestModel(userText) {
+  const t = userText.toLowerCase();
+  const len = userText.length;
+  const heavyKw = ["код", "code", "программ", "function", "class", "алгоритм", "докажи", "проанализируй", "объясни подробно", "напиши статью", "эссе", "математик", "формул", "физик", "стратеги", "бизнес-план", "юридическ"];
+  const lightKw = ["переведи", "translate", "сколько будет", "как дела", "привет", "hello", "что такое", "дай определение", "коротко"];
+  const isHeavy = heavyKw.some(k => t.includes(k)) || len > 500;
+  const isLight = lightKw.some(k => t.includes(k)) || len < 30;
+  if (isLight) return API_CONFIG.models.find(m => m.tier === 1);
+  if (isHeavy) return API_CONFIG.models.find(m => m.tier === 3);
+  return API_CONFIG.models.find(m => m.tier === 2) || API_CONFIG.models[0];
+}
+
+let totalTokens = 0;
+let totalReqs = 0;
+const history = [];
+
+const chatEl = document.getElementById("chat");
+const inputEl = document.getElementById("input");
+const sendEl = document.getElementById("send");
+const badgeEl = document.getElementById("model-badge");
+const statTokens = document.getElementById("stat-tokens");
+const statReq = document.getElementById("stat-req");
+
+function addMsg(text, cls, metaText) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.textContent = text;
+  if (metaText) {
+    const m = document.createElement("div");
+    m.className = "meta";
+    m.textContent = metaText;
+    d.appendChild(m);
+  }
+  chatEl.appendChild(d);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return d;
+}
+
+function updateStats(tokens, reqs) {
+  if (tokens !== undefined) { totalTokens += tokens; statTokens.textContent = totalTokens; }
+  if (reqs !== undefined) { totalReqs += reqs; statReq.textContent = totalReqs; }
+}
+
+inputEl.addEventListener("input", () => {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 110) + "px";
+});
+
+async function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text) return;
+  inputEl.value = "";
+  inputEl.style.height = "auto";
+  sendEl.disabled = true;
+
+  addMsg(text, "user");
+  history.push({ role: "user", content: text });
+
+  const model = pickBestModel(text);
+  badgeEl.textContent = `→ ${model.name}`;
+  badgeEl.classList.add("show");
+
+  const thinking = addMsg("...", "bot");
+
+  try {
+    const res = await fetch(API_CONFIG.baseUrl + "/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + API_CONFIG.apiKey
+      },
+      body: JSON.stringify({
+        model: model.id,
+        messages: history,
+        max_tokens: 2048
+      })
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data = await res.json();
+    const reply = data.choices?.[0]?.message?.content || data.content?.[0]?.text || "(пустой ответ)";
+    const usage = data.usage || {};
+    const tok = (usage.total_tokens || usage.completion_tokens || 0);
+    updateStats(tok, 1);
+
+    thinking.textContent = reply;
+    thinking.className = "msg bot";
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `${model.name} · ${tok} tok`;
+    thinking.appendChild(meta);
+
+    history.push({ role: "assistant", content: reply });
+
+  } catch (e) {
+    thinking.className = "msg err";
+    thinking.textContent = "Ошибка: " + e.message + ". Попробуй ещё раз или смени запрос.";
+    history.pop();
+  } finally {
+    sendEl.disabled = false;
+    chatEl.scrollTop = chatEl.scrollHeight;
+    setTimeout(() => badgeEl.classList.remove("show"), 2000);
+  }
+}
+
+sendEl.addEventListener("click", sendMessage);
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+</script>
+</body>
+</html>
